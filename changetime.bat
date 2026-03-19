@@ -185,3 +185,5 @@ set "c=!S:~%L%,1!"
 if "!c!"=="" (endlocal & set "%~2=%L%" & goto :eof)
 set /a L+=1
 goto SL
+
+
