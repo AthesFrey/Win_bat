@@ -3,10 +3,11 @@ chcp 65001 >nul
 setlocal EnableDelayedExpansion
 
 echo ===============================
-echo 批量修改文件/文件夹时间 (增强遥测版)
+echo 批量修改文件/文件夹时间 (硬茬跳过版-仅屏幕输出)
 echo 日期格式: YYYY-MM-DD / YYYYMMDD / YYYY/MM/DD
 echo 时间格式: 6位=HHMMSS  4位=HHMM(秒=00)  空=当前时间
 echo 仅接受纯数字或空，不支持冒号
+echo 说明: 碰到无权限/占用/异常对象时会跳过，仅在窗口显示结果
 echo ===============================
 
 :: -------- 获取当前日期/时间默认值 --------
@@ -82,7 +83,6 @@ if 1%SS% GEQ 160 (echo [ERR] 秒0-59 & goto READ_TIME)
 
 set "TIME_STD=%HH%:%MI%:%SS%"
 
-:TIME_READY
 echo [OK] 时间 = %TIME_STD%
 
 :: -------- 确认与执行 --------
@@ -94,59 +94,71 @@ if errorlevel 2 (
   goto END
 )
 
-set "LOGSTAMP=%DATE_STD%_%TIME_STD::=%"
-set "LOGSTAMP=%LOGSTAMP: =_%"
-set "LOGTXT=TimeChange_Failures_%LOGSTAMP%.txt"
-set "LOGCSV=TimeChange_Failures_%LOGSTAMP%.csv"
+echo 正在处理...(根目录自身将跳过，仅处理其下文件/文件夹)
 
-echo 正在处理...
-
-powershell -NoLogo -NoProfile -Command ^
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command ^
  "$ErrorActionPreference='Stop';" ^
- "$raw='%DT_FULL%';" ^
- "try{ $ts=[datetime]::Parse($raw) }catch{ Write-Host '解析失败:' $_.Exception.Message; exit 2 };" ^
- "$items = Get-ChildItem -LiteralPath . -Recurse -Force;" ^
- "$total=$items.Count; $ok=0; $fail=0;" ^
- "$fails = New-Object System.Collections.Generic.List[Object];" ^
- "function Classify([string]$etype,[string]$msg){" ^
- "  if($etype -eq 'System.UnauthorizedAccessException'){return '权限/只读'}" ^
- "  elseif($etype -eq 'System.IO.IOException' -and $msg -match 'being used'){return '被占用(句柄)'}" ^
- "  elseif($msg -match 'read-only'){return '只读属性'}" ^
- "  else{return '其它'}" ^
- "}" ^
- "foreach($f in $items){" ^
- "  $ro = $false; if($f.Attributes -band [IO.FileAttributes]::ReadOnly){$ro=$true}" ^
- "  if($ro){ try{ $f.Attributes = ($f.Attributes -bxor [IO.FileAttributes]::ReadOnly) }catch{} }" ^
- "  try{ $f.CreationTime=$ts; $f.LastAccessTime=$ts; $f.LastWriteTime=$ts; $ok++ }" ^
- "  catch{" ^
- "     $fail++; $etype=$_.Exception.GetType().FullName; $msg=$_.Exception.Message;" ^
- "     $cat=Classify $etype $msg;" ^
- "     $fails.Add([pscustomobject]@{Path=$f.FullName; ReadOnlyBefore=$ro; ExceptionType=$etype; Message=$msg; Category=$cat})" ^
+ "try {" ^
+ "  $raw='%DT_FULL%';" ^
+ "  try { $ts=[datetime]::ParseExact($raw,'yyyy-MM-dd HH:mm:ss',[System.Globalization.CultureInfo]::InvariantCulture) } catch { Write-Host ('解析失败: ' + $_.Exception.Message); exit 2 }" ^
+ "  $root=(Get-Item -LiteralPath '.').FullName;" ^
+ "  $items=New-Object System.Collections.Generic.List[Object];" ^
+ "  $fails=New-Object System.Collections.Generic.List[Object];" ^
+ "  function Classify([string]$etype,[string]$msg){" ^
+ "    if($etype -match 'UnauthorizedAccess' -or $msg -match 'access.*denied|拒绝访问|策略'){ return '权限/策略限制' }" ^
+ "    elseif($etype -match 'PathTooLong'){ return '路径过长' }" ^
+ "    elseif($etype -eq 'System.IO.IOException' -and $msg -match 'being used|另一个进程|占用'){ return '被占用(句柄)' }" ^
+ "    elseif($msg -match 'read-only|只读'){ return '只读属性' }" ^
+ "    else { return '其它' }" ^
  "  }" ^
- "}" ^
- "try{ $r=Get-Item -LiteralPath .; $r.CreationTime=$ts; $r.LastAccessTime=$ts; $r.LastWriteTime=$ts }catch{}" ^
- "Write-Host ('总:{0} 成功:{1} 失败:{2}' -f $total,$ok,$fail);" ^
- "if($fail -gt 0){" ^
- "  $groups = $fails | Group-Object Category | Sort-Object Count -Descending;" ^
- "  Write-Host '失败分类:';" ^
- "  foreach($g in $groups){ Write-Host ('  {0} : {1}' -f $g.Name,$g.Count) }" ^
- "  Write-Host '前20条失败示例:';" ^
- "  $fails | Select-Object -First 20 Path,Category,ReadOnlyBefore,ExceptionType | Format-Table -AutoSize | Out-String | Write-Host;" ^
- "  $csvPath = '%LOGCSV%'; $txtPath='%LOGTXT%';" ^
- "  $fails | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $csvPath;" ^
- "  ('时间戳={0}' -f $ts) | Out-File -FilePath $txtPath -Encoding UTF8;" ^
- "  ('总={0} 成功={1} 失败={2}' -f $total,$ok,$fail) | Out-File -FilePath $txtPath -Append -Encoding UTF8;" ^
- "  '分类统计:' | Out-File -FilePath $txtPath -Append -Encoding UTF8;" ^
- "  foreach($g in $groups){ ('  {0}={1}' -f $g.Name,$g.Count) | Out-File -FilePath $txtPath -Append -Encoding UTF8 }" ^
- "  '--- 失败详情 (CSV 同名) ---' | Out-File -FilePath $txtPath -Append -Encoding UTF8;" ^
- "  $fails | Select-Object Path,Category,ReadOnlyBefore,ExceptionType,Message | Format-Table -AutoSize | Out-String | Out-File -FilePath $txtPath -Append -Encoding UTF8;" ^
- "  Write-Host ('已生成日志: {0} / {1}' -f $txtPath,$csvPath);" ^
- "}" ^
- "exit 0"
+ "  function AddFail([string]$path,[bool]$ro,[string]$etype,[string]$msg){" ^
+ "    $cat=Classify $etype $msg;" ^
+ "    $fails.Add([pscustomobject]@{Path=$path; ReadOnlyBefore=$ro; ExceptionType=$etype; Message=$msg; Category=$cat}) | Out-Null" ^
+ "  }" ^
+ "  function EnumSafe([string]$dir){" ^
+ "    $entries=@();" ^
+ "    try { $entries=Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop }" ^
+ "    catch { AddFail $dir $false $_.Exception.GetType().FullName $_.Exception.Message; return }" ^
+ "    foreach($e in $entries){" ^
+ "      if($e.Attributes -band [IO.FileAttributes]::ReparsePoint){ continue }" ^
+ "      $items.Add($e) | Out-Null;" ^
+ "      if($e.PSIsContainer){ EnumSafe $e.FullName }" ^
+ "    }" ^
+ "  }" ^
+ "  EnumSafe $root;" ^
+ "  $total=$items.Count; $ok=0;" ^
+ "  foreach($f in $items){" ^
+ "    $ro=$false;" ^
+ "    try { if($f.Attributes -band [IO.FileAttributes]::ReadOnly){ $ro=$true; $f.Attributes=($f.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly)) } } catch {}" ^
+ "    try { $f.CreationTime=$ts; $f.LastAccessTime=$ts; $f.LastWriteTime=$ts; $ok++ }" ^
+ "    catch { AddFail $f.FullName $ro $_.Exception.GetType().FullName $_.Exception.Message }" ^
+ "  }" ^
+ "  $fail=$fails.Count;" ^
+ "  Write-Host ('总:{0} 成功:{1} 跳过/失败:{2} (根目录已跳过)' -f $total,$ok,$fail);" ^
+ "  if($fail -gt 0){" ^
+ "    $groups=$fails | Group-Object Category | Sort-Object Count -Descending;" ^
+ "    Write-Host '失败分类:';" ^
+ "    foreach($g in $groups){ Write-Host ('  {0} : {1}' -f $g.Name,$g.Count) }" ^
+ "    Write-Host '前20条失败示例:';" ^
+ "    $fails | Select-Object -First 20 Path,Category,ReadOnlyBefore,ExceptionType | Format-Table -AutoSize | Out-String | Write-Host;" ^
+ "  }" ^
+ "  exit 0" ^
+ "} catch {" ^
+ "  Write-Host ('脚本提前终止: ' + $_.Exception.Message);" ^
+ "  exit 10" ^
+ "}"
 
-echo 完成(errorlevel=%errorlevel%)
-if exist "%LOGTXT%" echo 失败详细: %LOGTXT%
-if exist "%LOGCSV%" echo 失败CSV : %LOGCSV%
+set "PS_RC=%errorlevel%"
+echo 完成(errorlevel=%PS_RC%)
+if "%PS_RC%"=="0" (
+  echo 已完成：结果已显示在本窗口
+) else if "%PS_RC%"=="2" (
+  echo 时间解析失败，请检查输入格式
+) else if "%PS_RC%"=="10" (
+  echo PowerShell 主流程提前终止
+) else if "%PS_RC%"=="786" (
+  echo 检测到策略限制：某个路径/文件被系统策略拦截
+)
 
 :END
 echo.
