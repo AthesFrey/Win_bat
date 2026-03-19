@@ -5,18 +5,20 @@ setlocal EnableDelayedExpansion
 echo ===============================
 echo 批量修改文件/文件夹时间 (增强遥测版)
 echo 日期格式: YYYY-MM-DD / YYYYMMDD / YYYY/MM/DD
-echo 时间格式: 6位=HHMMSS  4位=HHMM(秒=00)  空=00:00:00
+echo 时间格式: 6位=HHMMSS  4位=HHMM(秒=00)  空=当前时间
 echo 仅接受纯数字或空，不支持冒号
 echo ===============================
+
+:: -------- 获取当前日期/时间默认值 --------
+for /f %%I in ('powershell -NoLogo -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set "CUR_DATE=%%I"
+for /f %%I in ('powershell -NoLogo -NoProfile -Command "Get-Date -Format HHmmss"') do set "CUR_TIME=%%I"
 
 :: -------- 日期输入 --------
 :READ_DATE
 set "DATE_RAW="
-set /p "DATE_RAW=输入日期: "
-if "%DATE_RAW%"=="" (
-  echo [ERR] 必须输入日期
-  goto READ_DATE
-)
+set /p "DATE_RAW=输入日期 [默认 %CUR_DATE%]: "
+if "%DATE_RAW%"=="" set "DATE_RAW=%CUR_DATE%"
+
 for /f "tokens=* delims= " %%A in ("%DATE_RAW%") do set "DATE_RAW=%%A"
 set "DATE_STD=%DATE_RAW:/=-%"
 set "DATE_STD=%DATE_STD:\=-%"
@@ -52,11 +54,9 @@ goto READ_DATE
 :: -------- 时间输入 --------
 :READ_TIME
 set "TIME_RAW="
-set /p "TIME_RAW=输入时间(4位/6位/空): "
-if "%TIME_RAW%"=="" (
-  set "TIME_STD=00:00:00"
-  goto TIME_READY
-)
+set /p "TIME_RAW=输入时间(4位/6位，默认当前时间 %CUR_TIME%): "
+if "%TIME_RAW%"=="" set "TIME_RAW=%CUR_TIME%"
+
 call :AllDigits "%TIME_RAW%" _TD
 if "%_TD%"=="0" (
   echo [ERR] 只允许纯数字
